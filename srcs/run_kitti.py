@@ -18,7 +18,7 @@ from utils import get_bev, plot_bev
 
 class Detector(object):
 
-    def __init__(self, config, cdll):
+    def __init__(self, config, cdll: bool):
         self.config = config
         self.cdll = cdll
         if self.cdll:
@@ -37,6 +37,17 @@ class Detector(object):
         print("PIXOR BEV Detector Initialized!")
 
     def preprocess(self, velo, path):
+        """
+        If cdll is True, use C++ library to preprocess all point clouds in the given path argument
+        Otherwise, preprocess the point cloud `velo` in python
+        
+        Args:
+            velo: numpy array representing a point cloud
+            path: a string containing the path to the binary file of the point cloud
+        
+        return:
+            torch.Tensor of shape (36, 800, 700) 
+        """
         geom = self.config['geometry']
         velo_processed = np.zeros(geom['input_shape'], dtype=np.float32)
         if self.cdll:
@@ -91,6 +102,10 @@ class Detector(object):
         return corners, scores
 
     def __call__(self, velo, path):
+        """
+        velo is single lidar frame in form of a numpy array
+        path is a string containing the path to that binary file of lidar frame
+        """
         t_start = time.time()
         bev = self.preprocess(velo, path)
         t_pre = time.time()
@@ -107,7 +122,7 @@ class Detector(object):
         t_s = [t_pre-t_start, t_m-t_pre, t_post-t_m]
         return t_s, corners, scores, pred_bev
 
-def run(dataset, save_path, height=400):
+def run(dataset: pykitti.raw, save_path, height=400): 
     config = {
       "ckpt_name": "experiments/decay/34epoch",
       "use_bn": True,
@@ -140,9 +155,9 @@ def run(dataset, save_path, height=400):
     videowriter = cv2.VideoWriter(save_path, fourcc, 10.0, imshape)
 
     avg_time = []
-    for (item, velo_file) in enumerate(dataset.velo_files):
-        velo = dataset.get_velo(item)
-        path = dataset.velo_files[item]
+    for (item, velo_file) in enumerate(dataset.velo_files):  # Iterate through all lidar frames in a single scene
+        velo = dataset.get_velo(item) # returns a numpy array
+        path = dataset.velo_files[item] # velo_files is a list of strings, so path is the path to a specific lidar frame
         time, corners, scores, pred_bev = pixor(velo, path)
         #print(pred_bev.shape)
         print(time)

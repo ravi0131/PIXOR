@@ -33,9 +33,9 @@ class KITTI(Dataset):
 
     def __init__(self, frame_range = 10000, use_npy=False, train=True):
         self.frame_range = frame_range
-        self.velo = []
+        self.velo = [] # velo_files
         self.use_npy = use_npy
-        self.LidarLib = ctypes.cdll.LoadLibrary('preprocess/LidarPreprocess.so')
+        self.LidarLib = ctypes.cdll.LoadLibrary('preprocess/LidarPreprocess.so') #TODO: Change to you own custom binary voxelization function
         self.image_sets = self.load_imageset(train) # names
 
     def __len__(self):
@@ -203,7 +203,7 @@ class KITTI(Dataset):
         else:
             c_name = bytes(filename, 'utf-8')
             scan = np.zeros(self.geometry['input_shape'], dtype=np.float32)
-            c_data = ctypes.c_void_p(scan.ctypes.data)
+            c_data = ctypes.c_void_p(scan.ctypes.data) # TODO: Chnage to your own binary voxelization function
             self.LidarLib.createTopViewMaps(c_data, c_name)
             #scan = np.fromfile(filename, dtype=np.float32).reshape(-1, 4)
             
