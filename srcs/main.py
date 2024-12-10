@@ -177,12 +177,12 @@ def eval_dataset(config, net, loss_fn, loader, device, e_range='all'):
     return metrics, precisions, recalls, log_images
 
 
-def train(exp_name, device):
+def train(exp_name: str, device: torch.device):
     # Load Hyperparameters
     config, learning_rate, batch_size, max_epochs = load_config(exp_name)
 
     # Dataset and DataLoader
-    train_data_loader, test_data_loader = get_data_loader(batch_size, config['use_npy'],
+    train_data_loader, test_data_loader = get_data_loader(batch_size, config['use_npy'],  #TODO: Immplement data loader for av2
                                         geometry=config['geometry'], frame_range=config['frame_range'])
     # Model
     net, loss_fn, optimizer, scheduler = build_model(config, device, train=True)
@@ -219,7 +219,7 @@ def train(exp_name, device):
             net.set_decode(False)
         scheduler.step()
 
-        for input, label_map, image_id in train_data_loader:
+        for input, label_map, image_id in train_data_loader: # NOTE: What is meant by label map here?
             
             tic = time.time()#print('step', step)
             input = input.to(device)

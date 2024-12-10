@@ -163,7 +163,7 @@ def run(dataset: pykitti.raw, save_path, height=400):
         print(time)
         merged_im = np.zeros((pred_bev.shape[0], pred_bev.shape[1] * 2, 3), dtype=np.uint8)
         avg_time.append(time) 
-        image = np.asarray(dataset.get_cam2(item), dtype=np.uint8)
+        image = np.asarray(dataset.get_cam2(item), dtype=np.uint8) # requires an image for the corresponding lidar frame. TODO: Find an equivalent for av2
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         rows, cols = image.shape[:2]
         crop_x = int(merged_im.shape[0]//2 - height//2)

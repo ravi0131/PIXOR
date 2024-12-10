@@ -120,7 +120,20 @@ def plot_pr_curve(precisions, recalls, legend, name='PRCurve'):
     fig.savefig(path)
     print("PR Curve saved at", path)
 
-def get_points_in_a_rotated_box(corners, label_shape=[200, 175]):
+def get_points_in_a_rotated_box(corners: np.ndarray, label_shape=[200, 175]):
+    """
+    The function calculates all grid cells inside a rotated rectangle in label map space.
+    It sorts the rectangle corners, clamps the rectangle to label map bounds and 
+    iterates through grid columns (xx) and computes valid rows (yy) for each column.
+    The result is a list of discrete grid indices ((x,y)(x,y)) representing the pixels within the rectangle.
+    
+    Args:
+        corners: 4x2 numpy array of rectangle corners in label map space
+        label_shape: tuple of label map shape (height, width)
+        
+    Returns:
+        pixels: list of (x,y) tuples representing the pixels within the rectangle
+    """
     def minY(x0, y0, x1, y1, x):
         if x0 == x1:
             # vertical line, y0 is lowest
@@ -213,12 +226,12 @@ def get_points_in_a_rotated_box(corners, label_shape=[200, 175]):
             pixels.append((x, y))
 
     return pixels
-
-def load_config(exp_name):
+# TODO: Add a config file under experiments subdir for av2
+def load_config(exp_name: str):
     """ Loads the configuration file
 
      Args:
-         path: A string indicating the path to the configuration file
+         exp_name: A string indicating the path to the configuration file
      Returns:
          config: A Python dictionary of hyperparameter name-value pairs
          learning rate: The learning rate of the optimzer
