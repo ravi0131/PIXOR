@@ -58,7 +58,7 @@ make_kitti_video()
 Our Training Result (as of Dec 2018)
 ![alt text](imgs/result.png)
 
-All configuration (hyperparameters, GPUs, etc) should be put in a **config.json** file and save to the directory *srcs/experiments/$exp_name$*
+All configuration (hyperparameters, GPUs, etc) should be put in a **config.json** file and save to the directory *srcs/experiments/$exp\_name$*
 To train
 ```
 python srcs/main.py train (--name=$exp_name$)
