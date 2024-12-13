@@ -90,7 +90,7 @@ def plot_bev(velo_array, label_list = None, scores = None, window_name='GT', sav
     :param window_name: name of the open_cv2 window
     :return: None
     '''
-
+    print("LOG: executing plot_bev")
     intensity = get_bev(velo_array, label_list, scores)
 
     if save_path != None:
@@ -100,13 +100,15 @@ def plot_bev(velo_array, label_list = None, scores = None, window_name='GT', sav
     else:
         cv2.imshow(window_name, intensity)
         cv2.waitKey(3)
-
+    print("LOG: plot_bev executed")
     return intensity
 
 def plot_label_map(label_map):
+    print("LOG: executing plot_label_map")
     plt.figure()
     plt.imshow(label_map[::-1, :])
     plt.show()
+    print("LOG: plot_label_map executed")
 
 def plot_pr_curve(precisions, recalls, legend, name='PRCurve'):
 

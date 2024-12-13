@@ -8,7 +8,7 @@ import cv2
 rows = 800
 cols = 700
 height = 36
-path = '/mnt/ssd2/od/KITTI/training/velodyne'
+path = 'C:\\Users\\Ravi\\buni\\dataset\\kitti-data\\sequences\\00\\velodyne'
 
 print ('LiDAR data pre-processing starting...')
 
@@ -17,8 +17,8 @@ indata = np.zeros((rows, cols, height), dtype = np.float32)
 
 # IMPORTANT: CHANGE THE FILE PATH TO THE .so FILE
 # create a handle to LidarPreprocess.c
-SharedLib = ctypes.cdll.LoadLibrary('./LidarPreprocess.so')
-
+# SharedLib = ctypes.cdll.LoadLibrary('./LidarPreprocess.so')
+SharedLib = ctypes.cdll.LoadLibrary(r"C:\\Users\\Ravi\\buni\\PIXOR_Official\\LidarPreprocess.so")
 for frameNum in range(1):
 
 	# call the C function to create top view maps

@@ -47,13 +47,15 @@ class AV2(Dataset):
         self.global_to_scene_frame = []  # List mapping global index to (scene_id, frame_idx)
         self.total_frames = 0
 
-        # Precompute the mapping
-        for scene_id in self.scenes:
-            frames = self.av2_api.get_ordered_log_lidar_timestamps(scene_id)
-            num_frames = len(frames)
-            for frame_idx in range(num_frames):
-                self.global_to_scene_frame.append((scene_id, frames[frame_idx]))
-            self.total_frames += num_frames
+        # # Precompute the mapping
+        # for scene_id in self.scenes:
+        #     frames = self.av2_api.get_ordered_log_lidar_timestamps(scene_id)
+        #     num_frames = len(frames)
+        #     for frame_idx in range(num_frames):
+        #         self.global_to_scene_frame.append((scene_id, frames[frame_idx]))
+        #     self.total_frames += num_frames
+        # print(f"Total frames: {self.total_frames}")
+        # print("Done pre-computing the mapping")
 
     def __len__(self):
         return self.total_frames
@@ -81,43 +83,18 @@ class AV2(Dataset):
 
         index = np.nonzero(cls_map)
         reg_map[index] = (reg_map[index] - self.target_mean)/self.target_std_dev
-
-
-    # def load_imageset(self, train):
-    #     path = KITTI_PATH
-    #     if train:
-    #         path = os.path.join(path, "train.txt")
-    #     else:
-    #         path = os.path.join(path, "val.txt")
-
-    #     with open(path, 'r') as f:
-    #         lines = f.readlines() # get rid of \n symbol
-    #         names = []
-    #         for line in lines[:-1]:
-    #             if int(line[:-1]) < self.frame_range:
-    #                 names.append(line[:-1])
-
-    #         # Last line does not have a \n symbol
-    #         last = lines[-1][:6]
-    #         if int(last) < self.frame_range:
-    #             names.append(last)
-    #         # print(names[-1])
-    #         print("There are {} images in txt file".format(len(names)))
-
-    #         return names
-    
-    # def interpret_kitti_label(self, bbox):
-    #     w, h, l, y, z, x, yaw = bbox[8:15]
-    #     y = -y
-    #     yaw = - (yaw + np.pi / 2)
         
-    #     return x, y, w, l, yaw
-    
-    # def interpret_custom_label(self, bbox):
-    #     w, l, x, y, yaw = bbox
-    #     return x, y, w, l, yaw
-
     def get_corners(self, bbox: List[float]) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        return the 4 corners of the bounding box in the bird's eye view
+        
+        Args:
+            bbox:  list of the bounding box parameters of shape (5)
+        
+        Returns:
+            bev_corners: [4 * 2] numpy array of the 4 corners' (x, y)
+            reg_target: [6] numpy array of the regression targets  
+        """
         x, y, l, w, yaw = bbox
         
         # w, h, l, y, z, x, yaw = bbox[8:15]
@@ -126,9 +103,8 @@ class AV2(Dataset):
         # z facing up
         # y facing to the left of driver
 
-        yaw = -(yaw + np.pi / 2)
+        # yaw = -(yaw + np.pi / 2)
         
-        #x, y, w, l, yaw = self.interpret_kitti_label(bbox)
         
         bev_corners = np.zeros((4, 2), dtype=np.float32)
         # rear left
@@ -194,17 +170,16 @@ class AV2(Dataset):
                 is a car or one of the 'dontcare' (truck,van,etc) object
 
         '''
-        index = self.image_sets[index]
         if self.train:
-            label_path = os.path.join(os.path.expanduser('~'), 'output-data','av2','train','labels')
+            label_path = os.path.join(os.path.expanduser('~'),'buni', 'output-data','av2','bbox-estimation')
         else:
-            label_path = os.path.join(os.path.expanduser('~'), 'output-data','av2','test','labels')      
+            raise NotImplementedError("Labels for test set are not available")
         log_id, frame_id = self.global_to_scene_frame[index]
-        
+        print(f"get_label() called => log_id is {log_id} and frame_id is {frame_id}")
         label_map = np.zeros(self.geometry['label_shape'], dtype=np.float32)
         label_list = []
       
-        labels_df = pd.read_feather(os.path.join(label_path, log_id, frame_id + '.feather'))
+        labels_df = pd.read_feather(os.path.join(label_path, log_id, str(frame_id) + '.feather'))
         
         for index, row in labels_df.iterrows():
             #convert row into a list
@@ -236,7 +211,7 @@ class AV2(Dataset):
         lidar_frame_feather = pd.read_feather(frame_path)
         scan =  lidar_frame_feather[['x', 'y', 'z', 'intensity']].values
         
-        return self.lidar_preprocess(scan)
+        return scan
 
     
     def load_velo(self):
@@ -319,20 +294,94 @@ def get_data_loader(batch_size, use_npy, geometry=None):
     print("------------------------------------------------------------------")
     return train_data_loader, val_data_loader
 
+
+import matplotlib.pyplot as plt
+import numpy as np
+import numpy as np
+
+def get_bev2(velo_array, label_list=None, scores=None):
+    '''
+    Generate a Bird's Eye View (BEV) intensity image from the LiDAR point cloud.
+
+    :param velo_array: A 3D numpy array of shape (H, W, D) where H and W are spatial dimensions,
+                       and D is the number of features per grid cell.
+    :param label_list: (Optional) A list of numpy arrays of shape [4, 2], representing bounding box corners.
+    :param scores: (Optional) List of scores associated with each bounding box.
+    :return: A 2D numpy array representing the BEV intensity image.
+    '''
+    map_height = velo_array.shape[0]
+
+    # Compute the maximum value across all channels except the last one
+    val = (1 - velo_array[::-1, :, :-1].max(axis=2)) * 255
+    val = val.astype(np.uint8)
+
+    # Create a grayscale intensity image
+    intensity_image = val
+
+    return intensity_image
+
+
+import matplotlib.pyplot as plt
+import numpy as np
+from typing import List
+def plot_bev2(velo_array: np.ndarray, label_list:List[np.ndarray] =None, scores=None):
+    '''
+    Plot a Bird's Eye View (BEV) Lidar and bounding boxes using Matplotlib.
+    The heading of the vehicle is marked as a red line
+    (which connects front right and front left corner).
+
+    :param velo_array: A 3D numpy array of LiDAR data of shape (800,700,36)
+    :param label_list: A list of numpy arrays of shape [4, 2], which correspond to the 4 corners' (x, y).
+                       The corners should be in the following sequence:
+                       rear left, rear right, front right, and front left.
+    :param scores: Optional list of scores for the bounding boxes.
+    :return: None
+    '''
+    print("LOG: executing plot_bev2")
+    
+    # Generate the BEV intensity image
+    intensity = get_bev2(velo_array, label_list, scores)
+    
+    plt.figure(figsize=(10, 10))
+    plt.imshow(intensity, cmap='gray')
+    plt.axis('off')  # Hide axes for better visualization
+    
+    # Optionally, plot the bounding boxes
+    if label_list is not None:
+        for label in label_list:
+            corners = label / 0.1  # Scale to match pixel coordinates
+            map_height = intensity.shape[0]
+            corners[:, 1] += int(map_height // 2)
+            corners[:, 1] = map_height - corners[:, 1]
+            corners = corners.reshape(-1, 2)
+            # Close the loop by appending the first point at the end
+            corners = np.vstack([corners, corners[0]])
+            plt.plot(corners[:, 0], corners[:, 1], color='lime', linewidth=2)
+            # Draw the heading line (front right to front left corner)
+            heading = corners[2:4]
+            plt.plot(heading[:, 0], heading[:, 1], color='red', linewidth=2)
+    
+    plt.show()
+    print("LOG: plot_bev2 executed")
+    
+import matplotlib
+# %matplotlib inline
+
+import matplotlib.pyplot as plt
 def test0():
     k = AV2()
 
-    id = 25
+    id = 4
     k.load_velo()
     tstart = time.time()
     scan = k.load_velo_scan(id)
+    print(scan.shape)
     processed_v = k.lidar_preprocess(scan)
     label_map, label_list = k.get_label(id)
     print('time taken: %gs' %(time.time()-tstart))
-    plot_bev(processed_v, label_list)
+    plot_bev2(processed_v, label_list)
     plot_label_map(label_map[:, :, 6])
+    plot_label_map(label_map[:, :, 0])
     
-    
-if __name__ == 'main':
-    print(f"Yoohooo")
+if __name__ == "__main__":
     test0()
