@@ -8,8 +8,9 @@ from av2.datasets.sensor.av2_sensor_dataloader import  AV2SensorDataLoader
 import pandas as pd
 from pathlib import Path
 from typing import List, Tuple
+from ray_dropper import RayDropper
 
-AV2_PATH = os.path.join(os.path.expanduser('~'), 'buni','dataset','av2')
+AV2_PATH = os.path.join(os.path.expanduser('~'), 'buni','dataset','av2-pixor')
 
 class AV2(Dataset):
 
@@ -29,39 +30,27 @@ class AV2(Dataset):
 
 
     def __init__(self,train=True):
-        # self.frame_range = frame_range
-        # self.velo = [] # velo_files
-        # self.use_npy = use_npy
-        # self.LidarLib = ctypes.cdll.LoadLibrary('preprocess/LidarPreprocess.so') #TODO: Change to you own custom binary voxelization function
-        # self.image_sets = self.load_imageset(train) # names
         self.dataset_api = None
         self.train = train
         if train:
-            train_path = Path(os.path.join(AV2_PATH, 'train'))
+            train_path = Path(os.path.join(AV2_PATH, 'training','train'))
             self.av2_api = AV2SensorDataLoader(data_dir=train_path, labels_dir=train_path)
         else:
-            test_path = Path(os.path.join(AV2_PATH, 'test'))
+            test_path = Path(os.path.join(AV2_PATH, 'training','val'))
             self.av2_api = AV2SensorDataLoader(data_dir=test_path, labels_dir=test_path)
         
         self.scenes = self.av2_api.get_log_ids()
         self.global_to_scene_frame = []  # List mapping global index to (scene_id, frame_idx)
         self.total_frames = 0
 
-        # # Precompute the mapping
-        # for scene_id in self.scenes:
-        #     frames = self.av2_api.get_ordered_log_lidar_timestamps(scene_id)
-        #     num_frames = len(frames)
-        #     for frame_idx in range(num_frames):
-        #         self.global_to_scene_frame.append((scene_id, frames[frame_idx]))
-        #     self.total_frames += num_frames
-        # print(f"Total frames: {self.total_frames}")
-        # print("Done pre-computing the mapping")
-
     def __len__(self):
         return self.total_frames
 
     def __getitem__(self, item):
         scan = self.load_velo_scan(item)
+        rd = RayDropper()
+        scan = rd.drop_rays(scan)
+        scan = self.lidar_preprocess(scan)
         scan = torch.from_numpy(scan)
         
         label_map, _ = self.get_label(item)
@@ -71,6 +60,7 @@ class AV2(Dataset):
         scan = scan.permute(2, 0, 1)
         label_map = label_map.permute(2, 0, 1)
         return scan, label_map, item
+
 
     def reg_target_transform(self, label_map: np.ndarray):
         '''
@@ -96,15 +86,6 @@ class AV2(Dataset):
             reg_target: [6] numpy array of the regression targets  
         """
         x, y, l, w, yaw = bbox
-        
-        # w, h, l, y, z, x, yaw = bbox[8:15]
-        # manually take a negative s. t. it's a right-hand system, with
-        # x facing in the front windshield of the car
-        # z facing up
-        # y facing to the left of driver
-
-        # yaw = -(yaw + np.pi / 2)
-        
         
         bev_corners = np.zeros((4, 2), dtype=np.float32)
         # rear left
@@ -172,23 +153,132 @@ class AV2(Dataset):
         '''
         if self.train:
             label_path = os.path.join(os.path.expanduser('~'),'buni', 'output-data','av2','bbox-estimation')
-        else:
-            raise NotImplementedError("Labels for test set are not available")
-        log_id, frame_id = self.global_to_scene_frame[index]
-        print(f"get_label() called => log_id is {log_id} and frame_id is {frame_id}")
-        label_map = np.zeros(self.geometry['label_shape'], dtype=np.float32)
-        label_list = []
-      
-        labels_df = pd.read_feather(os.path.join(label_path, log_id, str(frame_id) + '.feather'))
+            log_id, frame_id = self.global_to_scene_frame[index]
+            print(f"get_label() called => log_id is {log_id} and frame_id is {frame_id}")
+            label_map = np.zeros(self.geometry['label_shape'], dtype=np.float32)
+            label_list = []
         
-        for index, row in labels_df.iterrows():
-            #convert row into a list
-            row = row.tolist()
-            corners, reg_target = self.get_corners(row)
-            self.update_label_map(label_map, corners, reg_target)
-            label_list.append(corners)
-        return label_map, label_list
+            labels_df = pd.read_feather(os.path.join(label_path, log_id, str(frame_id) + '.feather'))
+            
+            for index, row in labels_df.iterrows():
+                #convert row into a list
+                row = row.tolist()
+                corners, reg_target = self.get_corners(row)
+                self.update_label_map(label_map, corners, reg_target)
+                label_list.append(corners)
+            return label_map, label_list
+        
+        else:
+            log_id, frame_id = self.global_to_scene_frame[index]
+            print(f"get_label() called => log_id is {log_id} and frame_id is {frame_id}")
+            
+            cuboids = self.av2_api.get_labels_at_lidar_timestamp(log_id, frame_id).vertices_m
+            filtered_cuboids = self.filter_cuboids_by_roi(cuboids)
+            labels_2d = self._extract_face_corners(filtered_cuboids, bottom_face=True) # numpy array (N, 4, 2)
+            
+            label_list = []
+            label_map = np.zeros(self.geometry['label_shape'], dtype=np.float32)
+            
+            for label in labels_2d:
+                l, w, angle = self.get_lwo(label)
+                cx, cy = np.mean(label[:,0]), np.mean(label[:,1])
+                corners, reg_target = self.get_corners([cx, cy, l, w, angle])
+                self.update_label_map(label_map, corners, reg_target)
+                label_list.append(corners)
+            return label_map, label_list
 
+    def get_lwo (self, corners: np.ndarray) -> tuple:
+        """
+        Calculates length, width and orientation bbox with clockwise ordered corners.
+        
+        Args:
+            corners: numpy array of shape (4,2) with corners ordered clockwise
+                    starting from any position
+        
+        Returns:
+            tuple: (length, width, orientation) where orientation is in radians
+        """
+        # Calculate all edge lengths clockwise
+        edges = []
+        for i in range(4):
+            next_idx = (i + 1) % 4
+            edge = corners[next_idx] - corners[i]
+            edges.append(edge)
+            
+        # Calculate lengths of all edges
+        lengths = [np.linalg.norm(edge) for edge in edges]
+        
+        # Sort lengths - longer ones are length, shorter ones are width
+        sorted_lengths = sorted(lengths, reverse=True)
+        length = np.mean(sorted_lengths[:2])  # average of two longest edges
+        width = np.mean(sorted_lengths[2:])   # average of two shortest edges
+        
+        # Find longest edge for orientation
+        longest_edge_idx = lengths.index(max(lengths))
+        orientation = np.arctan2(edges[longest_edge_idx][1], 
+                            edges[longest_edge_idx][0])
+        
+        return length, width, orientation
+    
+    def filter_cuboids_by_roi(self, corners: np.ndarray) -> np.ndarray:
+        """
+        Filter cuboids based on whether they fall within specified ROI.
+
+        Args:
+            corners: numpy array of shape (N, 4, 2) containing corner coordinates
+            x_range: tuple of (min_x, max_x) defining ROI x bounds (0,70)
+            y_range: tuple of (min_y, max_y) defining ROI y bounds  (-40,40)
+
+        Returns:
+            numpy array containing only cuboids that fall within ROI
+        """
+        x_min = self.geometry['W1']
+        x_max = self.geometry['W2']
+        y_min = self.geometry['L1']
+        y_max = self.geometry['L2']
+        
+        filtered_cuboids = []
+        for cuboid in corners:
+            # Check if any corner falls within ROI
+            if np.any((cuboid[:, 0] >= x_min) & 
+                    (cuboid[:, 0] <= x_max) & 
+                    (cuboid[:, 1] >= y_min) & 
+                    (cuboid[:, 1] <= y_max)):
+                filtered_cuboids.append(cuboid)
+        
+        return np.array(filtered_cuboids)
+    
+    def _extract_face_corners(self, cuboids: np.ndarray, bottom_face=True):
+        """
+        Extract corner coordinates of top or bottom face from cuboids.
+        
+        Args:
+            cuboids: numpy array of shape (N, 8, 3) containing cuboid corner coordinates
+            bottom_face: bool, if True return bottom face corners, else top face corners
+        
+        Returns:
+            numpy array of shape (N, 4, 2) containing x,y coordinates of face corners
+            
+                5------4
+                |\\    |\\
+                | \\   | \\
+                6--\\--7  \\
+                \\  \\  \\ \\
+            l    \\  1-------0    h
+            e    \\ ||   \\ ||   e
+            n    \\||    \\||   i
+            g    \\2------3    g
+                t      width.     h
+                h.               t
+        """
+        # Select indices for bottom or top face
+        face_index = [0, 1, 5, 4] if bottom_face else [3, 2, 6, 7]
+        
+        # Extract corners for selected face (x,y coordinates only)
+        face_corners = cuboids[:, face_index, :2]
+        
+        return face_corners
+    
     def get_rand_velo(self):
         import random
         rand_v = random.choice(self.velo)
@@ -203,13 +293,14 @@ class AV2(Dataset):
             item: The index of the frame to get
         
         Returns:
-            A numpy array of shape (36, 800, 700) containing the voxelized lidar scan
+            A numpy array of shape (N,5)
+            Colmuns => x, y, z, laser_number, intensity
         """
         log_id, frame_id = self.global_to_scene_frame[item]
         
         frame_path = self.av2_api.get_lidar_fpath(log_id,frame_id)
         lidar_frame_feather = pd.read_feather(frame_path)
-        scan =  lidar_frame_feather[['x', 'y', 'z', 'intensity']].values
+        scan =  lidar_frame_feather[['x', 'y', 'z','laser_number','intensity']].values
         
         return scan
 
@@ -221,7 +312,8 @@ class AV2(Dataset):
             num_frames = len(frames)
             for frame_idx in range(num_frames):
                 self.global_to_scene_frame.append((scene_id, frames[frame_idx]))
-            self.total_frames += num_frames  
+        self.global_to_scene_frame = self.global_to_scene_frame[::10] # select every 10th sequence to speed up training in av2
+        self.total_frames = len(self.global_to_scene_frame)  
         print(f"Total frames: {self.total_frames}")
         print("Done pre-computing the mapping")
 
@@ -283,105 +375,38 @@ def get_data_loader(batch_size, use_npy, geometry=None):
     if geometry is not None:
         train_dataset.geometry = geometry
     train_dataset.load_velo()
-    train_data_loader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size, num_workers=3)
+    train_data_loader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size, num_workers=0)
     
     val_dataset = AV2(train=False)
     if geometry is not None:
         val_dataset.geometry = geometry
     val_dataset.load_velo()
-    val_data_loader = DataLoader(val_dataset, shuffle=False, batch_size=batch_size * 4, num_workers=8)
-
+    val_data_loader = DataLoader(val_dataset, shuffle=False, batch_size=batch_size * 4, num_workers=0)
+    print(f"Total frames in train dataset: {len(train_dataset)}")
+    print(f"Total frames in validation dataset: {len(val_dataset)}")
     print("------------------------------------------------------------------")
     return train_data_loader, val_data_loader
 
+def test():
+    # npy average time 0.31s
+    # c++ average time 0.08s 4 workers
+    batch_size = 3
+    train_data_loader, val_data_loader = get_data_loader(batch_size, False)
+    times = []
+    tic = time.time()
+    for i, (input, label_map, item) in enumerate(train_data_loader):
+        toc = time.time()
+        print(toc - tic)
+        times.append(toc-tic)
+        tic = time.time()
+        print("Entry", i)
+        print("Input shape:", input.shape)
+        print("Label Map shape", label_map.shape)
+        if i == 10:
+            break
+    print("average preprocess time per image", np.mean(times)/batch_size)    
 
-import matplotlib.pyplot as plt
-import numpy as np
-import numpy as np
+    print("Finish testing train dataloader")
 
-def get_bev2(velo_array, label_list=None, scores=None):
-    '''
-    Generate a Bird's Eye View (BEV) intensity image from the LiDAR point cloud.
-
-    :param velo_array: A 3D numpy array of shape (H, W, D) where H and W are spatial dimensions,
-                       and D is the number of features per grid cell.
-    :param label_list: (Optional) A list of numpy arrays of shape [4, 2], representing bounding box corners.
-    :param scores: (Optional) List of scores associated with each bounding box.
-    :return: A 2D numpy array representing the BEV intensity image.
-    '''
-    map_height = velo_array.shape[0]
-
-    # Compute the maximum value across all channels except the last one
-    val = (1 - velo_array[::-1, :, :-1].max(axis=2)) * 255
-    val = val.astype(np.uint8)
-
-    # Create a grayscale intensity image
-    intensity_image = val
-
-    return intensity_image
-
-
-import matplotlib.pyplot as plt
-import numpy as np
-from typing import List
-def plot_bev2(velo_array: np.ndarray, label_list:List[np.ndarray] =None, scores=None):
-    '''
-    Plot a Bird's Eye View (BEV) Lidar and bounding boxes using Matplotlib.
-    The heading of the vehicle is marked as a red line
-    (which connects front right and front left corner).
-
-    :param velo_array: A 3D numpy array of LiDAR data of shape (800,700,36)
-    :param label_list: A list of numpy arrays of shape [4, 2], which correspond to the 4 corners' (x, y).
-                       The corners should be in the following sequence:
-                       rear left, rear right, front right, and front left.
-    :param scores: Optional list of scores for the bounding boxes.
-    :return: None
-    '''
-    print("LOG: executing plot_bev2")
-    
-    # Generate the BEV intensity image
-    intensity = get_bev2(velo_array, label_list, scores)
-    
-    plt.figure(figsize=(10, 10))
-    plt.imshow(intensity, cmap='gray')
-    plt.axis('off')  # Hide axes for better visualization
-    
-    # Optionally, plot the bounding boxes
-    if label_list is not None:
-        for label in label_list:
-            corners = label / 0.1  # Scale to match pixel coordinates
-            map_height = intensity.shape[0]
-            corners[:, 1] += int(map_height // 2)
-            corners[:, 1] = map_height - corners[:, 1]
-            corners = corners.reshape(-1, 2)
-            # Close the loop by appending the first point at the end
-            corners = np.vstack([corners, corners[0]])
-            plt.plot(corners[:, 0], corners[:, 1], color='lime', linewidth=2)
-            # Draw the heading line (front right to front left corner)
-            heading = corners[2:4]
-            plt.plot(heading[:, 0], heading[:, 1], color='red', linewidth=2)
-    
-    plt.show()
-    print("LOG: plot_bev2 executed")
-    
-import matplotlib
-# %matplotlib inline
-
-import matplotlib.pyplot as plt
-def test0():
-    k = AV2()
-
-    id = 4
-    k.load_velo()
-    tstart = time.time()
-    scan = k.load_velo_scan(id)
-    print(scan.shape)
-    processed_v = k.lidar_preprocess(scan)
-    label_map, label_list = k.get_label(id)
-    print('time taken: %gs' %(time.time()-tstart))
-    plot_bev2(processed_v, label_list)
-    plot_label_map(label_map[:, :, 6])
-    plot_label_map(label_map[:, :, 0])
-    
 if __name__ == "__main__":
-    test0()
+    test()
