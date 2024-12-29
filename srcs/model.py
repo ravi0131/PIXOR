@@ -223,9 +223,23 @@ class Decoder(nn.Module):
         self.geometry = [geom["L1"], geom["L2"], geom["W1"], geom["W2"]]
         self.grid_size = 0.4
 
-        self.target_mean = [0.008, 0.001, 0.202, 0.2, 0.43, 1.368]
-        self.target_std_dev = [0.866, 0.5, 0.954, 0.668, 0.09, 0.111]
+        #ORIGINAL
+        # self.target_mean = [0.008, 0.001, 0.202, 0.2, 0.43, 1.368]
+        # self.target_std_dev = [0.866, 0.5, 0.954, 0.668, 0.09, 0.111]
+        
+        #Pseudo-labels
+        # self.target_mean = [0.02593118, 0.22776878,  0.48488665, -0.05008079,  1.59522376,  2.20159499] #TODO. 
+        # self.target_std_dev = [0.91359755, 0.33585652, 3.30667751, 2.13782117, 0.83206007, 0.69090933]  #TODO.
 
+        #Ground Truth Single Frame (overfit)
+        # self.target_mean =  [0.55108836, -0.05490645,  0.18352025,  0.1984451,   0.57678769,  1.49336463]
+        # self.target_std_dev = [0.71474333, 0.42711668, 1.17953996, 0.63330789, 0.17247922, 0.21158238]
+
+        #Ground Truth Training
+        self.target_mean = [0.55108836, -0.05490645,  0.18352025,  0.1984451,   0.57678769,  1.49336463]
+        self.target_std_dev = [0.71474333, 0.42711668, 1.17953996, 0.63330789, 0.17247922, 0.21158238]
+
+        
     def forward(self, x):
         '''
 
@@ -254,9 +268,10 @@ class Decoder(nn.Module):
         cos_t = torch.cos(theta)
         sin_t = torch.sin(theta)
 
+        # Geometry: [-40, 40, 0, 70]
         x = torch.arange(self.geometry[2], self.geometry[3], self.grid_size, dtype=torch.float32, device=device)
         y = torch.arange(self.geometry[0], self.geometry[1], self.grid_size, dtype=torch.float32, device=device)
-        yy, xx = torch.meshgrid([y, x])
+        yy, xx = torch.meshgrid([y, x], indexing='ij')
         centre_y = yy + dy
         centre_x = xx + dx
         l = log_l.exp()
@@ -318,18 +333,25 @@ class PIXOR(nn.Module):
 
         features = self.backbone(x)
         cls, reg = self.header(features)
+        # print(f"Daddy the cls shape from model is : {cls.shape}")
+        # print(f"Daddy the reg shape from model is : {reg.shape}")
         self.cam_fov_mask = self.cam_fov_mask.to(device)
         cls = cls * self.cam_fov_mask
+        # print(f"Daddy the cls shape from model after fov mask is : {cls.shape}")
+        # print(f"Daddy self.decode is : {self.use_decode}")
         if self.use_decode:
             decoded = self.corner_decoder(reg)
             # Return tensor(Batch_size, height, width, channels)
             #decoded = decoded.permute(0, 2, 3, 1)
             #cls = cls.permute(0, 2, 3, 1)
             #reg = reg.permute(0, 2, 3, 1)
-            pred = torch.cat([cls, reg, decoded], dim=1)
+            pred = torch.cat([cls, reg, decoded], dim=1) # dim=1 is channel, dim=0 is batch
+            # print(f"Daddy the  pred shape from model in use_decode branch is : {pred.shape}")
         else:
             pred = torch.cat([cls, reg], dim=1)
+            # print(f"Daddy the  pred shape from model in else branch is : {pred.shape}")
 
+        # print(f"Daddy the final pred shape from model is : {pred.shape}")
         return pred
 
 def test_decoder(decode = True):

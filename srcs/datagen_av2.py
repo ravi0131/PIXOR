@@ -5,6 +5,7 @@ import torch
 from utils import plot_bev, get_points_in_a_rotated_box, plot_label_map, trasform_label2metric
 from torch.utils.data import Dataset, DataLoader
 from av2.datasets.sensor.av2_sensor_dataloader import  AV2SensorDataLoader
+from av2.structures.sweep import Sweep
 import pandas as pd
 from pathlib import Path
 from typing import List, Tuple
@@ -25,32 +26,37 @@ class AV2(Dataset):
         'label_shape': (200, 175, 7)
     }
 
-    target_mean = np.array([0.008, 0.001, 0.202, 0.2, 0.43, 1.368])
-    target_std_dev = np.array([0.866, 0.5, 0.954, 0.668, 0.09, 0.111])
+    # target_mean = np.array([0.008, 0.001, 0.202, 0.2, 0.43, 1.368]) # calculate this for all pseudo labels in the training dataset | TODO: write script to calculate this and add this information to the config
+    # target_std_dev = np.array([0.866, 0.5, 0.954, 0.668, 0.09, 0.111])
 
 
     def __init__(self,train=True):
         self.dataset_api = None
         self.train = train
         if train:
-            train_path = Path(os.path.join(AV2_PATH, 'training','train'))
+            train_path = Path(os.path.join(AV2_PATH, 'overfit','train'))
             self.av2_api = AV2SensorDataLoader(data_dir=train_path, labels_dir=train_path)
+            print(f"Dataset for training set created")
         else:
-            test_path = Path(os.path.join(AV2_PATH, 'training','val'))
+            test_path = Path(os.path.join(AV2_PATH, 'overfit','val'))
             self.av2_api = AV2SensorDataLoader(data_dir=test_path, labels_dir=test_path)
+            print(f"Dataset for validation set created")
         
         self.scenes = self.av2_api.get_log_ids()
         self.global_to_scene_frame = []  # List mapping global index to (scene_id, frame_idx)
         self.total_frames = 0
+        self.FRAMES_LOADED = False
+        self.CALCULATED = False
 
     def __len__(self):
         return self.total_frames
 
     def __getitem__(self, item):
         scan = self.load_velo_scan(item)
-        rd = RayDropper()
-        scan = rd.drop_rays(scan)
-        scan = self.lidar_preprocess(scan)
+        # rd = RayDropper()
+        # scan = rd.drop_rays(scan)
+        # scan = self.lidar_preprocess(scan)
+        scan = self.lidar_preprocess_flipped(scan)
         scan = torch.from_numpy(scan)
         
         label_map, _ = self.get_label(item)
@@ -60,14 +66,46 @@ class AV2(Dataset):
         scan = scan.permute(2, 0, 1)
         label_map = label_map.permute(2, 0, 1)
         return scan, label_map, item
+    
+    def calculate_mean_std(self):
+        """
+        Calculate the mean and standard deviation of the labels of the training dataset
+        """
+        if not self.FRAMES_LOADED:
+            raise ValueError("Frames have not been loaded yet")
+        sum_labels = np.zeros(self.geometry['label_shape'][2] - 1)  # shape: 6
+        sum_squares = np.zeros(self.geometry['label_shape'][2] - 1) # shape: 6
+        count = 0
 
+        for i in range(len(self)):
+            label_map, _ = self.get_label(i)    # shape: 200x175x7
+            cls_map = label_map[..., 0] #shape: 200x175
+            reg_map = label_map[..., 1:] #shape 200x175x6
 
+            index = np.nonzero(cls_map)
+            filtered_reg_map = reg_map[index]  # shape: number of 1s in cls_map x 6
+
+            sum_labels += np.sum(filtered_reg_map, axis=0)
+            sum_squares += np.sum(filtered_reg_map ** 2, axis=0)
+            count += filtered_reg_map.shape[0]
+
+        mean = sum_labels / count
+        std_dev = np.sqrt(sum_squares / count - mean ** 2)
+        print("Mean of the labels: ", mean)
+        print("Standard deviation of the labels: ", std_dev)
+        self.target_mean = mean
+        self.target_std_dev = std_dev
+        self.CALCULATED = True
+    
     def reg_target_transform(self, label_map: np.ndarray):
         '''
         Inputs are numpy arrays (not tensors!)
         :param label_map: [200 * 175 * 7] label tensor
         :return: normalized regression map for all non_zero classification locations
         '''
+        if not self.CALCULATED:
+            raise ValueError("Mean and standard deviation of the labels have not been calculated yet")
+        
         cls_map = label_map[..., 0]
         reg_map = label_map[..., 1:]
 
@@ -111,15 +149,17 @@ class AV2(Dataset):
 
     def update_label_map(self, map: np.ndarray, bev_corners: np.ndarray, reg_target: np.ndarray):
         """
+        Prepares label_map for training.
+        Transforms the 
         Args:
             map: [200 * 175 * 7] numpy array
-            bev_corners: [4 * 2] numpy array of the 4 corners' (x, y)
-            reg_target: [6] numpy array of the regression targets
+            bev_corners: [4 * 2] numpy array of the 4 corners' (x, y) (metric space)
+            reg_target: [6] numpy array of the regression targets (metric space)
         
         Returns:
             None
         """
-        label_corners = (bev_corners / 4 ) / 0.1
+        label_corners = (bev_corners / 4 ) / 0.1 
         label_corners[:, 1] += self.geometry['label_shape'][0] / 2
 
         points = get_points_in_a_rotated_box(label_corners, self.geometry['label_shape'])
@@ -128,17 +168,69 @@ class AV2(Dataset):
             label_x = p[0]
             label_y = p[1]
             metric_x, metric_y = trasform_label2metric(np.array(p))
-            actual_reg_target = np.copy(reg_target)
-            actual_reg_target[2] = reg_target[2] - metric_x
-            actual_reg_target[3] = reg_target[3] - metric_y
-            actual_reg_target[4] = np.log(reg_target[4])
-            actual_reg_target[5] = np.log(reg_target[5])
+            actual_reg_target = np.copy(reg_target) 
+            actual_reg_target[2] = reg_target[2] - metric_x #dx
+            actual_reg_target[3] = reg_target[3] - metric_y #dy
+            actual_reg_target[4] = np.log(reg_target[4])    #log(w)
+            actual_reg_target[5] = np.log(reg_target[5])    #log(l)
 
             map[label_y, label_x, 0] = 1.0
             map[label_y, label_x, 1:7] = actual_reg_target
 
+    #TODO: This function gets gt_boxes for training and evaluation. Remove when you are done experimenting
+    def get_label(self, index) -> Tuple[np.ndarray, List[np.ndarray]]:
+        log_id, frame_id = self.global_to_scene_frame[index]
+        # print(f"get_label() called => log_id is {log_id} and frame_id is {frame_id}")
+        cuboids = self.av2_api.get_labels_at_lidar_timestamp(log_id, frame_id).vertices_m
+        filtered_cuboids = self.filter_cuboids_by_roi(cuboids)
+        labels_2d = self._extract_face_corners(filtered_cuboids, bottom_face=True) # numpy array (N, 4, 2)
+        
+        label_list = []
+        label_map = np.zeros(self.geometry['label_shape'], dtype=np.float32)
+        
+        for label in labels_2d:
+            l, w, angle = self.get_lwo(label)
+            cx, cy = np.mean(label[:,0]), np.mean(label[:,1])
+            corners, reg_target = self.get_corners([cx, cy, l, w, angle])
+            self.update_label_map(label_map, corners, reg_target)
+            label_list.append(corners)
+        return label_map, label_list
 
-    def get_label(self, index):
+    # This function gets pseudo-labels for both training and validation.
+    # Ideally we should use pseudo-labels for training and gt-boxes for validation but this gets pseudo-labels for both
+    def get_label1(self, index) -> Tuple[np.ndarray, List[np.ndarray]]:
+        '''
+        Get label map (label) for a given index
+        
+        Args:
+            index: int, index of the frame to get the label for
+            
+        Returns:
+            label_map: [200 * 175 * 7] numpy array
+            label_list: list of the corners of the bounding boxes (ground truth)
+        
+        Each gt_box in label_list is a 4x2 numpy array of the 4 corners' (x, y)
+    
+        '''
+        label_path = os.path.join(os.path.expanduser('~'),'buni', 'output-data','av2','bbox-estimation')
+        log_id, frame_id = self.global_to_scene_frame[index]
+        # print(f"get_label() called => log_id is {log_id} and frame_id is {frame_id}")
+        label_map = np.zeros(self.geometry['label_shape'], dtype=np.float32)
+        label_list = []
+    
+        labels_df = pd.read_feather(os.path.join(label_path, log_id, str(frame_id) + '.feather'))
+        
+        for index, row in labels_df.iterrows():
+            #convert row into a list
+            row = row.tolist()
+            corners, reg_target = self.get_corners(row)
+            self.update_label_map(label_map, corners, reg_target)
+            label_list.append(corners)
+        return label_map, label_list
+    
+    # This function gets pseudo-labels for trainig and gt-boxes for validation
+    # This is the function that should be used for final training and evaluation
+    def get_label2(self, index):
         '''
         :param i: the ith velodyne scan in the train/val set
         :return: label map: <--- This is the learning target
@@ -154,7 +246,7 @@ class AV2(Dataset):
         if self.train:
             label_path = os.path.join(os.path.expanduser('~'),'buni', 'output-data','av2','bbox-estimation')
             log_id, frame_id = self.global_to_scene_frame[index]
-            print(f"get_label() called => log_id is {log_id} and frame_id is {frame_id}")
+            # print(f"get_label() called => log_id is {log_id} and frame_id is {frame_id}")
             label_map = np.zeros(self.geometry['label_shape'], dtype=np.float32)
             label_list = []
         
@@ -170,7 +262,7 @@ class AV2(Dataset):
         
         else:
             log_id, frame_id = self.global_to_scene_frame[index]
-            print(f"get_label() called => log_id is {log_id} and frame_id is {frame_id}")
+            # print(f"get_label() called => log_id is {log_id} and frame_id is {frame_id}")
             
             cuboids = self.av2_api.get_labels_at_lidar_timestamp(log_id, frame_id).vertices_m
             filtered_cuboids = self.filter_cuboids_by_roi(cuboids)
@@ -299,21 +391,34 @@ class AV2(Dataset):
         log_id, frame_id = self.global_to_scene_frame[item]
         
         frame_path = self.av2_api.get_lidar_fpath(log_id,frame_id)
-        lidar_frame_feather = pd.read_feather(frame_path)
-        scan =  lidar_frame_feather[['x', 'y', 'z','laser_number','intensity']].values
+        sweep = Sweep.from_feather(frame_path)
+        points = sweep.xyz
+        laser_number = sweep.laser_number
+        intensity = sweep.intensity
         
+        # lidar_frame_feather = pd.read_feather(frame_path) #TODO: reading feather directly leads to loss of precision. Instantiate a sweep and then read from its points
+        # scan =  lidar_frame_feather[['x', 'y', 'z','laser_number','intensity']].values
+        scan = np.column_stack((points, laser_number, intensity))
         return scan
 
     
     def load_velo(self):
-        """Precompute mapping to fill the global_to_scene_frame list"""
+        """Precompute mapping to fill the global_to_scene_frame list
+            This method is not called directly in __init__ but rather later on
+            so as to enable passing a different geometry thant the default one
+        """
+        if self.FRAMES_LOADED:
+            return
         for scene_id in self.scenes:
             frames = self.av2_api.get_ordered_log_lidar_timestamps(scene_id)
             num_frames = len(frames)
             for frame_idx in range(num_frames):
                 self.global_to_scene_frame.append((scene_id, frames[frame_idx]))
+        
         self.global_to_scene_frame = self.global_to_scene_frame[::10] # select every 10th sequence to speed up training in av2
         self.total_frames = len(self.global_to_scene_frame)  
+        self.FRAMES_LOADED = True
+        
         print(f"Total frames: {self.total_frames}")
         print("Done pre-computing the mapping")
 
@@ -353,7 +458,7 @@ class AV2(Dataset):
             Columns => x, y, z, intensity
         
         Returns:
-            A numpy array of shape (36, 800, 700) containing the voxelized lidar scan
+            A numpy array of shape (800, 700, 36) containing the voxelized lidar scan
         """
         velo_processed = np.zeros(self.geometry['input_shape'], dtype=np.float32)
         intensity_map_count = np.zeros((velo_processed.shape[0], velo_processed.shape[1]))
@@ -369,18 +474,46 @@ class AV2(Dataset):
                                              where=intensity_map_count != 0)
         return velo_processed
     
+    def lidar_preprocess_flipped(self, scan: np.ndarray) -> np.ndarray:
+        """
+        Voxelizes the lidar scan
+        
+        Args:
+            scan: A numpy array of shape (n, 4) containing the lidar scan
+            Columns => x, y, z, intensity
+        
+        Returns:
+            A numpy array of shape (36, 800, 700) containing the voxelized lidar scan
+        """
+        velo_processed = np.zeros(self.geometry['input_shape'], dtype=np.float32)
+        intensity_map_count = np.zeros((velo_processed.shape[0], velo_processed.shape[1]))
+        velo = self.passthrough(scan)
+        for i in range(velo.shape[0]):
+            x = int((velo[i, 1]-self.geometry['L1']) / 0.1)
+            x = velo_processed.shape[0] - 1 - x  # Flip x-axis
+            y = int((velo[i, 0]-self.geometry['W1']) / 0.1)
+            z = int((velo[i, 2]-self.geometry['H1']) / 0.1)
+            velo_processed[x, y, z] = 1
+            velo_processed[x, y, -1] += velo[i, 3]
+            intensity_map_count[x, y] += 1
+        velo_processed[:, :, -1] = np.divide(velo_processed[:, :, -1],  intensity_map_count,
+                                            where=intensity_map_count != 0)
+        return velo_processed
+    
 
-def get_data_loader(batch_size, use_npy, geometry=None):
+def get_data_loader(batch_size, geometry=None):
     train_dataset = AV2(train=True)
     if geometry is not None:
         train_dataset.geometry = geometry
     train_dataset.load_velo()
+    train_dataset.calculate_mean_std()
     train_data_loader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size, num_workers=0)
     
     val_dataset = AV2(train=False)
     if geometry is not None:
         val_dataset.geometry = geometry
     val_dataset.load_velo()
+    val_dataset.calculate_mean_std()
     val_data_loader = DataLoader(val_dataset, shuffle=False, batch_size=batch_size * 4, num_workers=0)
     print(f"Total frames in train dataset: {len(train_dataset)}")
     print(f"Total frames in validation dataset: {len(val_dataset)}")

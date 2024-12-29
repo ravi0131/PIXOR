@@ -51,6 +51,7 @@ def maskFOV_on_BEV(shape, fov=88.0):
     return in_fov
 
 def get_logger(config, mode='train'):
+    
     folder = os.path.join('logs', config['name'], mode)
     if not os.path.exists(folder):
         os.makedirs(folder)
@@ -72,6 +73,11 @@ def get_bev(velo_array, label_list = None, scores = None):
             plot_corners[:, 1] += int(map_height // 2)
             plot_corners[:, 1] = map_height - plot_corners[:, 1]
             plot_corners = plot_corners.astype(int).reshape((-1, 1, 2))
+            
+            # Check for invalid values before casting
+            if not np.isfinite(plot_corners).all():
+                raise ValueError("Invalid values (NaN or inf) found in plot_corners")
+            
             cv2.polylines(intensity, [plot_corners], True, (255, 0, 0), 2)
             cv2.line(intensity, tuple(plot_corners[2, 0]), tuple(plot_corners[3, 0]), (0, 0, 255), 3)
 
@@ -242,7 +248,9 @@ def load_config(exp_name: str):
          target_classes: A list of strings denoting the classes to
                         build the classifer for
      """
-    path = os.path.join('experiments', exp_name, 'config.json')
+     
+    script_path = os.path.abspath(__file__)
+    path = os.path.join(os.path.dirname(script_path),'experiments', exp_name, 'config.json')
     with open(path) as file:
         config = json.load(file)
 

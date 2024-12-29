@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import numpy as np
 
 class CustomLoss(nn.Module):
     def __init__(self, device, config, num_classes=1):
@@ -34,7 +34,7 @@ class CustomLoss(nn.Module):
         return loss.mean()
 
     def cross_entropy(self, x, y):
-        return F.binary_cross_entropy(input=x, target=y, reduction='elementwise_mean')
+        return F.binary_cross_entropy(input=x, target=y, reduction='mean')
 
 
     def forward(self, preds, targets):
@@ -48,17 +48,20 @@ class CustomLoss(nn.Module):
         loss:
           (tensor) loss = SmoothL1Loss(loc_preds, loc_targets) + FocalLoss(cls_preds, cls_targets).
         '''
-
+        # targets => [BatchSize, 7, Height, Width]
+        # targets' shape: [1, 7, 200, 175]  (single frame overfit example)  
         batch_size = targets.size(0)
-        image_size = targets.size(1) * targets.size(2)
-        cls_targets, loc_targets = targets.split([1, 6], dim=1)
-        if preds.size(1) == 7:
+        image_size = targets.size(1) * targets.size(2) # 200 x 175
+        cls_targets, loc_targets = targets.split([1, 6], dim=1) # cls_targets: [1, 1, 200, 175], loc_targets: [1, 6, 200, 175]
+        if preds.size(1) == 7: # preds' shape: [1, 7, 200, 175]
             cls_preds, loc_preds = preds.split([1, 6], dim=1)
         elif preds.size(1) == 15:
             cls_preds, loc_preds, _ = preds.split([1, 6, 8], dim=1)
         ################################################################
         # cls_loss = self.focal_loss(cls_preds, cls_targets)
         ################################################################
+        # print(f"METHOD: Custom_loss => cls_pred: {cls_preds}")
+        # np.save("cls_pred.npy", cls_preds.detach().numpy())
         cls_loss = self.cross_entropy(cls_preds, cls_targets) * self.alpha
         cls = cls_loss.item()
         ################################################################

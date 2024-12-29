@@ -119,6 +119,6 @@ class RayDropper:
         # Step 2: Spherical drop
         points_after_spherical_drop = self._random_spherical_drop(points_after_beam_drop)
         
-        print(f"ray-dropper => counter: {self.counter}, spherical_resolution: {self.spherical_resolution}, beam_drop_ratio: {self.beam_drop_ratio} ")
+        # print(f"ray-dropper => counter: {self.counter}, spherical_resolution: {self.spherical_resolution}, beam_drop_ratio: {self.beam_drop_ratio} ")
         self.counter += 1
         return points_after_spherical_drop
