@@ -8,7 +8,7 @@ import math
 import json
 import os
 import logger
-
+import logger_av2
 def trasform_label2metric(label, ratio=4, grid_size=0.1, base_height=100):
     '''
     :param label: numpy array of shape [..., 2] of coordinates in label map space
@@ -56,6 +56,7 @@ def get_logger(config, mode='train'):
     if not os.path.exists(folder):
         os.makedirs(folder)
     return logger.Logger(folder)
+    # return logger_av2.Logger(folder)
 
 def get_bev(velo_array, label_list = None, scores = None):
     map_height = velo_array.shape[0]
@@ -65,18 +66,20 @@ def get_bev(velo_array, label_list = None, scores = None):
     intensity[:, :, 0] = val
     intensity[:, :, 1] = val
     intensity[:, :, 2] = val
-    # FLip in the x direction
+    int32_min = np.iinfo(np.int32).min
+    int32_max = np.iinfo(np.int32).max
 
     if label_list is not None:
         for corners in label_list:
             plot_corners = corners / 0.1
             plot_corners[:, 1] += int(map_height // 2)
             plot_corners[:, 1] = map_height - plot_corners[:, 1]
-            plot_corners = plot_corners.astype(int).reshape((-1, 1, 2))
-            
+            plot_corners = np.clip(plot_corners, int32_min, int32_max) # clip to avoid overflow
             # Check for invalid values before casting
             if not np.isfinite(plot_corners).all():
                 raise ValueError("Invalid values (NaN or inf) found in plot_corners")
+            
+            plot_corners = plot_corners.astype(int).reshape((-1, 1, 2))
             
             cv2.polylines(intensity, [plot_corners], True, (255, 0, 0), 2)
             cv2.line(intensity, tuple(plot_corners[2, 0]), tuple(plot_corners[3, 0]), (0, 0, 255), 3)
