@@ -65,7 +65,7 @@ def compute_overlaps(boxes1: np.ndarray, boxes2: np.ndarray):
     return overlaps
 
 
-def compute_iou(box, boxes):
+def compute_iou(box: Polygon, boxes: List[Polygon]):
     """Calculates IoU of the given box with the array of the given boxes.
     Note: the areas are passed in rather than calculated here for efficiency. 
     Calculate once in the caller to avoid duplicate work.
@@ -191,7 +191,7 @@ def filter_pred(config, pred: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
 
     cls_pred = pred[0, ...]
     # print(f"METHOD: filter_pred: cls_pred.shape: {cls_pred.shape}")
-    np.save("cls_pred.npy", cls_pred.cpu().numpy())
+    # np.save("cls_pred.npy", cls_pred.cpu().numpy())
     activation = cls_pred > config['cls_threshold']
     num_boxes = int(activation.sum())
     
@@ -213,7 +213,7 @@ def filter_pred(config, pred: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
     # print(f"METHOD: filter_pred: scores type: {type(scores)}")
     # print(f"METHOD: filter_pred: corners.type: {type(corners)}")
     # print(f"METHOD: filter_pred: corners: {corners}")
-    np.save("corners.npy", corners)
+    # np.save("corners.npy", corners)
     # NMS
     selected_ids = non_max_suppression(corners, scores, config['nms_iou_threshold'])
     corners = corners[selected_ids]
